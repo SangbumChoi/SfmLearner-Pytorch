@@ -52,7 +52,7 @@ class VNL_Loss(nn.Module):
         pw = torch.cat([x, y, z], 1).permute(0, 2, 3, 1) # [b, h, w, c]
         return pw
 
-    # selecting 3 index randomly
+    # selecting 3 index randomly -> which i need to change originially pick 15% of random point
     def select_index(self):
         valid_width = self.input_size[1]
         valid_height = self.input_size[0]
@@ -101,28 +101,29 @@ class VNL_Loss(nn.Module):
         # point group that has real distance
         return pw_groups
 
-    #
+    # p123 : random candidate of point, gt_xyz : groundtruth of 3d point cloud
     def filter_mask(self, p123, gt_xyz, delta_cos=0.867,
                     delta_diff_x=0.005,
                     delta_diff_y=0.005,
                     delta_diff_z=0.005):
+        # pw : real depth of corresponding p123
         pw = self.form_pw_groups(p123, gt_xyz)
         # local real distances
         pw12 = pw[:, :, :, 1] - pw[:, :, :, 0]
         pw13 = pw[:, :, :, 2] - pw[:, :, :, 0]
         pw23 = pw[:, :, :, 2] - pw[:, :, :, 1]
-        ###ignore linear
+        ###ignore linear, batch and diff vectors
         pw_diff = torch.cat([pw12[:, :, :, np.newaxis], pw13[:, :, :, np.newaxis], pw23[:, :, :, np.newaxis]],
                             3)  # [b, n, 3, 3]
         m_batchsize, groups, coords, index = pw_diff.shape
-        proj_query = pw_diff.view(m_batchsize * groups, -1, index).permute(0, 2, 1)  # (B* X CX(3)) [bn, 3(p123), 3(xyz)]
-        proj_key = pw_diff.view(m_batchsize * groups, -1, index)  # B X  (3)*C [bn, 3(xyz), 3(p123)]
+        proj_query = pw_diff.view(m_batchsize * groups, -1, index).permute(0, 2, 1)  # B X C X 3 [bn, 3(p123), 3(xyz)]
+        proj_key = pw_diff.view(m_batchsize * groups, -1, index)  # B X 3 X C [bn, 3(xyz), 3(p123)]
         q_norm = proj_query.norm(2, dim=2)
-        nm = torch.bmm(q_norm.view(m_batchsize * groups, index, 1), q_norm.view(m_batchsize * groups, 1, index)) #[]
+        nm = torch.bmm(q_norm.view(m_batchsize * groups, index, 1), q_norm.view(m_batchsize * groups, 1, index)) #[], bmm is batch matrix multiplication
         energy = torch.bmm(proj_query, proj_key)  # transpose check [bn, 3(p123), 3(p123)]
         norm_energy = energy / (nm + 1e-8)
         norm_energy = norm_energy.view(m_batchsize * groups, -1)
-        mask_cos = torch.sum((norm_energy > delta_cos) + (norm_energy < -delta_cos), 1) > 3  # igonre
+        mask_cos = torch.sum((norm_energy > delta_cos) + (norm_energy < -delta_cos), 1) > 3  # igonre, it's printed like true, false map
         mask_cos = mask_cos.view(m_batchsize, groups)
         ##ignore padding and invilid depth
         mask_pad = torch.sum(pw[:, :, 2, :] > self.delta_z, 2) == 3
@@ -166,7 +167,7 @@ class VNL_Loss(nn.Module):
         :param data: target label, ground truth depth, [B, W, H, C], padding region [padding_up, padding_down]
         :return:
         """
-        gt_points, dt_points = self.select_points_groups(gt_depth, pred_depth)
+        gt_points, dt_points = self.select_points_groups(gt_depth, pred_depth) # picking out points
 
         gt_p12 = gt_points[:, :, :, 1] - gt_points[:, :, :, 0]
         gt_p13 = gt_points[:, :, :, 2] - gt_points[:, :, :, 0]
